@@ -299,6 +299,29 @@ def main():
                     # Configure "No" column: pinned left, small width, not editable
                     grid_options.configure_column("No", pinned='left', width=50, editable=False, cellStyle={'textAlign': 'center', 'fontWeight': 'bold', 'backgroundColor': '#f0f0f0'})
                     
+                    # Auto-size columns based on content
+                    for col in df_display.columns:
+                        if col in ["No", "_index"]: continue
+                        try:
+                            # Calculate max length of data (convert to string first)
+                            # Using top 100 rows for performance optimization if needed, but for small files full scan is fine.
+                            # Given user files seem < 1000 rows, full scan is OK.
+                            series = df_display[col].astype(str)
+                            max_len = series.map(len).max()
+                            if pd.isna(max_len): max_len = 0
+                        except Exception:
+                            max_len = 0
+                        
+                        # Compare with header length
+                        header_len = len(str(col))
+                        target_len = max(max_len, header_len)
+                        
+                        # Calculate pixel width (approx 8-10px per char + padding)
+                        # Adding buffer for sort icons and padding
+                        width_px = int(target_len * 10) + 30 
+                        
+                        grid_options.configure_column(col, width=width_px)
+                    
                     grid_options.configure_default_column(editable=True, enableRowGroup=True)
                     grid_options.configure_selection('multiple', use_checkbox=True)
                     # grid_options.configure_pagination(paginationAutoPageSize=False, paginationPageSize=20) # Disabled as per user request
