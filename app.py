@@ -81,9 +81,28 @@ def parse_file(file):
             data.append(line.split("|"))
             d01_indices.append(i)
             
-    num_columns = len(data[0]) if data else 0
+    # Calculate max columns to handle jagged rows
+    num_columns = max(len(row) for row in data) if data else 0
     columns = [get_column_name(i+1) for i in range(num_columns)]
-    return pd.DataFrame(data, columns=columns), file_content, d01_indices
+    
+    # Pad rows to ensure uniform length
+    # This prevents "10 columns passed, passed data had 19 columns" errors if using DataFrame constructor directly with mismatch
+    # Actually DataFrame(data) handles it but 'columns' arg must match width? 
+    # If we pass explicit columns list, it expects data to match.
+    # It is safer to DataFrame from list of lists and THEN set columns, OR pad manually.
+    # DataFrame constructor with 'columns' will trunc or error if mismatch?
+    # Let's simple create DataFrame and let it infer, then set columns? No, logic needs columns.
+    
+    df = pd.DataFrame(data)
+    # If more columns than we thought? No, we used max.
+    # If less columns? It fills None.
+    
+    # Rename columns 
+    # df.columns might be 0..N-1.
+    df.columns = columns[:len(df.columns)] 
+    # Wait, if we use max, len(df.columns) should equal num_columns.
+    
+    return df, file_content, d01_indices
 
 def save_to_txt(df, original_file_content, d01_indices, original_filename):
     """Saves the DataFrame back into a text file by replacing the D01 block."""
