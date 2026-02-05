@@ -316,9 +316,9 @@ def main():
                         header_len = len(str(col))
                         target_len = max(max_len, header_len)
                         
-                        # Calculate pixel width (approx 8-10px per char + padding)
-                        # Adding buffer for sort icons and padding
-                        width_px = int(target_len * 10) + 30 
+                        # Calculate pixel width (approx 12px per char for safety on Cloud fonts + padding)
+                        # Increased multiplier from 10 -> 12, padding 30 -> 40
+                        width_px = int(target_len * 12) + 40
                         
                         grid_options.configure_column(col, width=width_px)
                     
