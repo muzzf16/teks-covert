@@ -188,11 +188,165 @@ def main():
                 if df.empty:
                     st.warning(f"Tidak ditemukan baris data yang dimulai dengan 'D01' di file {file.name}.")
                 else:
+                    # --- Excel-like Formula Bar ---
+                    # Placed at the very top of the tab content
+                    st.markdown("""
+                        <style>
+                        .formula-bar {
+                            display: flex;
+                            align-items: center;
+                            background-color: #f3f2f1;
+                            padding: 5px;
+                            border-bottom: 1px solid #e1dfdd;
+                            margin-bottom: 10px;
+                        }
+                        .name-box {
+                            width: 150px;
+                            margin-right: 10px;
+                            border: 1px solid #ccc;
+                            background: white;
+                        }
+                        .fx-icon {
+                            font-weight: bold;
+                            color: #888;
+                            margin-right: 10px;
+                            font-style: italic;
+                            font-family: serif;
+                        }
+                        .formula-input {
+                            flex-grow: 1;
+                        }
+                        /* Adjust Streamlit inputs to fit bar */
+                        .stTextInput input {
+                            padding: 5px;
+                            font-family: monospace;
+                        }
+                        </style>
+                    """, unsafe_allow_html=True)
+
+                    # Formula Bar Layout
+                    fb_col1, fb_col2, fb_col3, fb_col4 = st.columns([2, 0.5, 6, 2])
+                    
+                    # Target Column (Name Box simulation)
+                    columns = df.columns.tolist()
+                    clean_columns = [c for c in columns if c not in ["_index", "No"]]
+                    
+                    with fb_col1:
+                        target_col = st.selectbox("Target", options=clean_columns, key=f"target_{file.name}", label_visibility="collapsed")
+
+                    with fb_col2:
+                         st.markdown("<div style='text-align: center; padding-top: 5px; color: #666; font-weight: bold; font-family: serif;'>ƒx</div>", unsafe_allow_html=True)
+
+                    with fb_col3:
+                        formula_input = st.text_input("Formula", placeholder="Contoh: A + B", key=f"formula_{file.name}", label_visibility="collapsed")
+
+                    with fb_col4:
+                        apply_btn = st.button("✔ Terapkan", key=f"apply_formula_{file.name}", use_container_width=True)
+
+                    # --- Formula Logic (Moved from Expander) ---
+                    if apply_btn:
+                        try:
+                            # Get latest data from grid
+                            # NOTE: 'edited_df' is not available yet if we move this UP.
+                            # We must rely on session state or render Grid first? 
+                            # Streamlit execution flow: Top -> Bottom.
+                            # Solution: Render Grid first but logic handles update? 
+                            # NO, if we render Grid first, the inputs are below.
+                            # We want inputs ABOVE.
+                            # BUT we need grid data to calculate?
+                            # We can use st.session_state[ss_key]["df"] which is the SOURCE of truth.
+                            
+                            current_data = st.session_state[ss_key]["df"].copy()
+                            
+                            # For selection-based formula, we need selection state.
+                            # AgGrid selection is sent back on rerun.
+                            # If we just clicked "Apply", we might rely on PREVIOUS selection?
+                            # Yes, 'prev_selection' variable is already defined above in the code (which we need to make sure is available).
+                            
+                            # ... (Logic needs to be here) ...
+                            # Let's ensure 'prev_selection' is defined before this block.
+                            
+                             # Helper for numeric conversion
+                            def to_num(s):
+                                return pd.to_numeric(s, errors='coerce').fillna(0)
+
+                            # 1. Determine Scope (Rows) based on PREV SELECTION
+                            has_selection = False
+                            if prev_selection:
+                                has_selection = True
+                                selected_indices = [r.get('_index') for r in prev_selection if r.get('_index') is not None]
+                                target_mask = current_data['_index'].isin(selected_indices)
+                                row_scope_msg = f"{len(selected_indices)} baris terpilih"
+                            else:
+                                target_mask = pd.Series([True] * len(current_data), index=current_data.index)
+                                row_scope_msg = "SEMUA baris (tidak ada seleksi)"
+                                selected_indices = current_data['_index'].tolist()
+
+                            # 2. Check for Aggregation Mode (Row Math)
+                            agg_keywords = {
+                                "SUM": "sum", "+": "sum", "ADD": "sum",
+                                "AVG": "mean", "AVERAGE": "mean",
+                                "MIN": "min",
+                                "MAX": "max"
+                            }
+                            formula_upper = formula_input.strip().upper()
+                            is_aggregation = formula_upper in agg_keywords
+
+                            if is_aggregation and len(selected_indices) > 1:
+                                # --- Aggregation Logic ---
+                                agg_func = agg_keywords[formula_upper]
+                                values_to_agg = to_num(current_data.loc[target_mask, target_col])
+                                
+                                if agg_func == "sum": result = values_to_agg.sum()
+                                elif agg_func == "mean": result = values_to_agg.mean()
+                                elif agg_func == "min": result = values_to_agg.min()
+                                elif agg_func == "max": result = values_to_agg.max()
+                                
+                                first_idx = selected_indices[0]
+                                actual_idx = current_data[current_data['_index'] == first_idx].index
+                                
+                                if not actual_idx.empty:
+                                    current_data.loc[actual_idx, target_col] = result
+                                    st.toast(f"Hasil agregasi ({result}) disimpan di baris pertama seleksi.")
+                                else:
+                                    st.warning("Tidak dapat menemukan baris target.")
+                            else:
+                                # --- Column/Cell Logic ---
+                                processed_formula = formula_input
+                                
+                                def replace_cell_ref(match):
+                                    col_ref = match.group(1).upper()
+                                    row_ref = int(match.group(2))
+                                    if col_ref in clean_columns:
+                                        idx = row_ref - 1
+                                        if 0 <= idx < len(current_data):
+                                            val = current_data.iloc[idx][col_ref]
+                                            try: return str(float(val))
+                                            except: return str(val)
+                                    return match.group(0)
+
+                                processed_formula = re.sub(r'\b([A-Z]+)([0-9]+)\b', replace_cell_ref, processed_formula, flags=re.IGNORECASE)
+                                numeric_context = current_data[clean_columns].apply(pd.to_numeric, errors='coerce').fillna(0)
+                                result_series = numeric_context.eval(processed_formula)
+                                
+                                if not isinstance(result_series, pd.Series):
+                                    result_series = pd.Series([result_series] * len(current_data), index=current_data.index)
+                                
+                                result_subset = result_series.loc[target_mask]
+                                current_data.loc[target_mask, target_col] = result_subset
+                                st.toast(f"Formula diterapkan pada {row_scope_msg}.")
+
+                            # Update Session State
+                            st.session_state[ss_key]["df"] = current_data
+                            # Refresh to show changes
+                            if hasattr(st, 'rerun'): st.rerun()
+                            else: st.experimental_rerun()
+
+                        except Exception as e:
+                            st.error(f"Error Formula: {e}")
+
                     # --- Toolbar: Edit Struktur (Baris & Kolom) ---
                     # Placed ABOVE AgGrid
-                    # Search Bar
-                    search_term = st.text_input("Cari Baris (Search)", placeholder="Ketik untuk memfilter data...", key=f"search_{file.name}")
-                    
                     st.write("##### Edit Struktur Tabel")
                     tb_col1, tb_col2 = st.columns([1, 1])
 
@@ -200,32 +354,22 @@ def main():
                     
                     # Access PREVIOUS selection from session state for "Buttons Above" logic
                     prev_selection = []
-                    # Debugging Selection
-                    # st.write(f"Debug Grid Key: {grid_key}")
                     if grid_key in st.session_state and st.session_state[grid_key] is not None:
                          prev_selection = st.session_state[grid_key].get("selectedItems", [])
-                    
-                    if not prev_selection:
-                        # Fallback: Check if we can get it from the last run's variable if it exists in session? 
-                        # No, simpler to just rely on the key.
-                        pass
 
                     # Row Controls
                     with tb_col1:
-                        # Use sub-columns for compact buttons "Row: [+] [-]"
                         r_c1, r_c2, r_c3 = st.columns([0.4, 0.3, 0.3])
                         with r_c1: st.write("**Baris:**")
                         with r_c2:
-                            if st.button("➕", key=f"btn_add_row_{file.name}", help="Sisipkan Baris di Bawah Seleksi"):
+                            if st.button("➕", key=f"btn_add_row_{file.name}", help="Sisipkan Baris"):
                                 current_df = st.session_state[ss_key]["df"]
                                 new_row = {c: "" for c in current_df.columns if c != "_index"}
-                                # Default value
                                 if not current_df.empty:
                                     first_val = current_df.iloc[0, 0]
                                     if str(first_val).startswith("D01"):
                                         new_row[current_df.columns[0]] = "D01"
                                 
-                                # Use prev_selection
                                 if prev_selection:
                                     sel_ids = [r.get("_index") for r in prev_selection]
                                     positions = current_df.index[current_df['_index'].isin(sel_ids)].tolist()
@@ -245,9 +389,9 @@ def main():
                                 else: st.experimental_rerun()
 
                         with r_c3:
-                            if st.button("➖", key=f"btn_del_row_{file.name}", help="Hapus Baris Terpilih"):
+                            if st.button("➖", key=f"btn_del_row_{file.name}", help="Hapus Baris"):
                                 if not prev_selection:
-                                    st.warning("Pilih baris di tabel dulu!")
+                                    st.warning("Pilih baris dlu!")
                                 else:
                                     current_df = st.session_state[ss_key]["df"]
                                     sel_ids = [r.get("_index") for r in prev_selection]
@@ -262,7 +406,7 @@ def main():
                          c_c1, c_c2, c_c3, c_c4 = st.columns([0.3, 0.2, 0.2, 0.3])
                          with c_c1: st.write("**Kolom:**")
                          with c_c2:
-                             if st.button("➕", key=f"btn_add_col_{file.name}", help="Tambah Kolom di Akhir"):
+                             if st.button("➕", key=f"btn_add_col_{file.name}", help="Tambah Kolom"):
                                  current_df = st.session_state[ss_key]["df"]
                                  clean_cols = [c for c in current_df.columns if c not in ["_index", "No"]]
                                  next_name = get_column_name(len(clean_cols) + 1)
@@ -274,9 +418,8 @@ def main():
                          with c_c3:
                              pass
                          with c_c4:
-                             # Dropdown for column deletion - minimalist
                              clean_cols = [c for c in df.columns if c not in ["_index", "No"]]
-                             to_del = st.selectbox("Hapus Kolom", ["Hapus?"] + clean_cols, key=f"sel_del_{file.name}", label_visibility="collapsed")
+                             to_del = st.selectbox("Hapus", ["Hapus?"] + clean_cols, key=f"sel_del_{file.name}", label_visibility="collapsed")
                              if to_del and to_del != "Hapus?":
                                  current_df = st.session_state[ss_key]["df"]
                                  if to_del in current_df.columns:
@@ -288,51 +431,32 @@ def main():
                     # Display editable table
                     st.markdown("<div class='table-container'>", unsafe_allow_html=True)
                     
-                    # Ensure tracking index for consistent row selection
                     if "_index" not in df.columns:
                         df["_index"] = range(len(df))
                         st.session_state[ss_key]["df"] = df
 
-                    # Create Display DataFrame with Row Numbers
                     df_display = df.copy()
-                    # Insert visual row number
                     df_display.insert(0, "No", range(1, len(df_display) + 1))
                     
-                    # Configuration for AgGrid
                     grid_options = GridOptionsBuilder.from_dataframe(df_display)
                     grid_options.configure_column("_index", hide=True)
-                    # Configure "No" column: pinned left, small width, not editable
                     grid_options.configure_column("No", pinned='left', width=50, editable=False, cellStyle={'textAlign': 'center', 'fontWeight': 'bold', 'backgroundColor': '#f0f0f0'})
                     
-                    # Auto-size columns based on content
                     for col in df_display.columns:
                         if col in ["No", "_index"]: continue
                         try:
-                            # Calculate max length of data (convert to string first)
-                            # Using top 100 rows for performance optimization if needed, but for small files full scan is fine.
-                            # Given user files seem < 1000 rows, full scan is OK.
-                            series = df_display[col].astype(str)
-                            max_len = series.map(len).max()
-                            if pd.isna(max_len): max_len = 0
-                        except Exception:
-                            max_len = 0
-                        
-                        # Compare with header length
-                        header_len = len(str(col))
-                        target_len = max(max_len, header_len)
-                        
-                        # Calculate pixel width (approx 12px per char for safety on Cloud fonts + padding)
-                        # Increased multiplier from 10 -> 12, padding 30 -> 40
-                        width_px = int(target_len * 12) + 40
+                            # Simple width estimation
+                            header_len = len(str(col))
+                            width_px = max(80, header_len * 15) 
+                        except:
+                            width_px = 100
                         
                         grid_options.configure_column(col, width=width_px)
                     
                     grid_options.configure_default_column(editable=True, enableRowGroup=True)
                     grid_options.configure_selection('multiple', use_checkbox=True)
-                    # grid_options.configure_pagination(paginationAutoPageSize=False, paginationPageSize=20) # Disabled as per user request
-                    
                     # Apply Search if present
-                    if search_term:
+                    if 'search_term' in locals() and search_term:
                         grid_options.configure_grid_options(quickFilterText=search_term)
                         
                     grid_options = grid_options.build()
@@ -342,162 +466,13 @@ def main():
                         gridOptions=grid_options, 
                         enable_enterprise_modules=False, 
                         update_mode=GridUpdateMode.SELECTION_CHANGED | GridUpdateMode.MODEL_CHANGED,
-                        data_return_mode=DataReturnMode.AS_INPUT, # Return full data to prevent loss on save when filtered
-                        key=grid_key, # Matches logic above
-                        height=400,
-                        width='100%'
+                        data_return_mode=DataReturnMode.AS_INPUT, 
+                        key=grid_key, 
+                        height=500, # Increased height for 'Sheet' feel
+                        width='100%',
+                        theme='balham' # Closer to Excel
                     )
                     st.markdown("</div>", unsafe_allow_html=True)
-
-                    # --- Editor Formula ---
-                    with st.expander("Formula Editor"):
-                        st.info("Masukkan formula untuk menghitung nilai kolom. \n"
-                                "- **Referensi Sel**: Gunakan format 'A5' untuk merujuk nilai pada kolom A baris 5. Contoh: `A1 + B1`.\n"
-                                "- **Operasi Kolom**: Contoh: `A + B` (menjumlahkan seluruh kolom A dan B).\n"
-                                "- **Agregasi Baris**: Pilih baris, lalu ketik `SUM`, `AVG`, `MAX`, `MIN`.")
-                        
-                        f_col1, f_col2 = st.columns([2, 1])
-                        
-                        # Use original columns relative to data (exclude No and _index)
-                        columns = df.columns.tolist()
-                        clean_columns = [c for c in columns if c not in ["_index", "No"]]
-                        
-                        with f_col1:
-                            formula_input = st.text_input("Formula", placeholder="Contoh: A5 + B5 atau A + B", key=f"formula_{file.name}")
-                        
-                        with f_col2:
-                            target_col = st.selectbox("Kolom Target (Hasil)", options=clean_columns, key=f"target_{file.name}")
-                        
-                        if st.button("Terapkan Formula", key=f"apply_formula_{file.name}"):
-                            try:
-                                # Get latest data from grid
-                                # NOTE: 'edited_df['data']' now contains "No" column!
-                                grid_data = edited_df['data'].copy()
-                                # Drop "No" for logic processing
-                                current_data = grid_data.drop(columns=['No'], errors='ignore')
-                                
-                                selected_rows = edited_df['selected_rows']
-                                
-                                # Helper for numeric conversion
-                                def to_num(s):
-                                    return pd.to_numeric(s, errors='coerce').fillna(0)
-
-                                # 1. Determine Scope (Rows)
-                                # Check if selected_rows is not empty/None safely
-                                has_selection = False
-                                if selected_rows is None:
-                                    has_selection = False
-                                elif isinstance(selected_rows, pd.DataFrame):
-                                    has_selection = not selected_rows.empty
-                                elif isinstance(selected_rows, list):
-                                    has_selection = len(selected_rows) > 0
-                                else:
-                                    # Fallback for other iterables
-                                    has_selection = len(selected_rows) > 0
-
-                                if has_selection:
-                                    # If it's a dataframe, convert to list of dicts or handle accordingly
-                                    if isinstance(selected_rows, pd.DataFrame):
-                                        # Assuming the dataframe has the same structure/columns
-                                        selected_indices = selected_rows['_index'].tolist()
-                                    else:
-                                        # List of dicts
-                                        selected_indices = [r.get('_index') for r in selected_rows if r.get('_index') is not None]
-                                    
-                                    target_mask = current_data['_index'].isin(selected_indices)
-                                    row_scope_msg = f"{len(selected_indices)} baris terpilih"
-                                else:
-                                    target_mask = pd.Series([True] * len(current_data), index=current_data.index)
-                                    row_scope_msg = "SEMUA baris (tidak ada seleksi)"
-                                    selected_indices = current_data['_index'].tolist()
-
-                                # 2. Check for Aggregation Mode (Row Math)
-                                # Trigger if formula is a keyword AND multiple rows selected (or intended generic agg)
-                                agg_keywords = {
-                                    "SUM": "sum", "+": "sum", "ADD": "sum",
-                                    "AVG": "mean", "AVERAGE": "mean",
-                                    "MIN": "min",
-                                    "MAX": "max"
-                                }
-                                formula_upper = formula_input.strip().upper()
-                                is_aggregation = formula_upper in agg_keywords
-
-                                if is_aggregation and len(selected_indices) > 1:
-                                    # --- Aggregation Logic (Row 1 + Row 2 + ...) ---
-                                    agg_func = agg_keywords[formula_upper]
-                                    
-                                    # Get values to agg
-                                    values_to_agg = to_num(current_data.loc[target_mask, target_col])
-                                    
-                                    if agg_func == "sum":
-                                        result = values_to_agg.sum()
-                                    elif agg_func == "mean":
-                                        result = values_to_agg.mean()
-                                    elif agg_func == "min":
-                                        result = values_to_agg.min()
-                                    elif agg_func == "max":
-                                        result = values_to_agg.max()
-                                    
-                                    # Update logic: Where to put the result?
-                                    # Standard behavior: Put in the FIRST selected row
-                                    first_idx = selected_indices[0]
-                                    
-                                    # Identify the row in the dataframe that matches this index
-                                    # Note: selected_indices are the values of _index column
-                                    actual_idx = current_data[current_data['_index'] == first_idx].index
-                                    
-                                    if not actual_idx.empty:
-                                        current_data.loc[actual_idx, target_col] = result
-                                        st.toast(f"Hasil agregasi ({result}) disimpan di baris pertama seleksi.")
-                                    else:
-                                        st.warning("Tidak dapat menemukan baris target untuk menyimpan hasil.")
-                                        
-                                else:
-                                    # --- Column/Cell Logic ---
-                                    processed_formula = formula_input
-                                    
-                                    def replace_cell_ref(match):
-                                        col_ref = match.group(1).upper()
-                                        row_ref = int(match.group(2))
-                                        
-                                        if col_ref in clean_columns:
-                                            # Lookup by row position (approximate if filtered)
-                                            # We grab the tracking _index for safety if needed, 
-                                            # but here we use iloc for 'Row N' semantics
-                                            idx = row_ref - 1
-                                            if 0 <= idx < len(current_data):
-                                                val = current_data.iloc[idx][col_ref]
-                                                try:
-                                                    return str(float(val))
-                                                except:
-                                                    return str(val)
-                                        return match.group(0)
-
-                                    # Pattern: Word boundary, 1+ letters, 1+ digits, Word boundary
-                                    processed_formula = re.sub(r'\b([A-Z]+)([0-9]+)\b', replace_cell_ref, processed_formula, flags=re.IGNORECASE)
-                                    
-                                    # Convert context to numeric
-                                    numeric_context = current_data[clean_columns].apply(pd.to_numeric, errors='coerce').fillna(0)
-                                    
-                                    # Calculate
-                                    result_series = numeric_context.eval(processed_formula)
-                                    
-                                    # Handle scalar
-                                    if not isinstance(result_series, pd.Series):
-                                        result_series = pd.Series([result_series] * len(current_data), index=current_data.index)
-                                    
-                                    # Apply
-                                    result_subset = result_series.loc[target_mask]
-                                    current_data.loc[target_mask, target_col] = result_subset
-                                    
-                                    st.toast(f"Formula diterapkan pada {row_scope_msg}.")
-
-                                # Update Session State
-                                st.session_state[ss_key]["df"] = current_data
-                                st.success("Tabel diperbarui!")
-
-                            except Exception as e:
-                                st.error(f"Terjadi kesalahan: {e}")
                     
 
                         
