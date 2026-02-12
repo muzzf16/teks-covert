@@ -108,7 +108,7 @@ def save_to_txt(df, original_file_content, d01_indices, original_filename):
     """Saves the DataFrame back into a text file by replacing the D01 block."""
     if not d01_indices:
         # Fallback if no D01 indices were found originally (shouldn't happen if df is populated)
-        return "\n".join(original_file_content), original_filename
+        return "\r\n".join(original_file_content), original_filename
 
     # Determine the start and end of the original D01 block
     # Assuming D01 lines are roughly contiguous or we just replace the range from min to max
@@ -130,13 +130,18 @@ def save_to_txt(df, original_file_content, d01_indices, original_filename):
     save_df = df.drop(columns=['_index'], errors='ignore')
     
     for _, row in save_df.iterrows():
+        # Clean data: Replace NaN/None with empty string
+        row_clean = row.fillna("").astype(str).replace("nan", "").replace("None", "")
         # Join with pipes
-        line_content = "|".join(map(str, row.tolist()))
+        line_content = "|".join(row_clean.tolist())
         new_d01_lines.append(line_content)
         
     # Combine
     final_lines = header_lines + new_d01_lines + footer_lines
-    content = "\n".join(final_lines)
+    content = "\r\n".join(final_lines)
+    
+    # Ensure trailing newline if it's standard text file
+    content += "\r\n"
     
     base_name = os.path.splitext(original_filename)[0]
     new_filename = f"{base_name}_diedit.txt"
@@ -271,7 +276,7 @@ def main():
                          with c_c4:
                              # Dropdown for column deletion - minimalist
                              clean_cols = [c for c in df.columns if c not in ["_index", "No"]]
-                             to_del = st.selectbox("", ["Hapus?"] + clean_cols, key=f"sel_del_{file.name}", label_visibility="collapsed")
+                             to_del = st.selectbox("Hapus Kolom", ["Hapus?"] + clean_cols, key=f"sel_del_{file.name}", label_visibility="collapsed")
                              if to_del and to_del != "Hapus?":
                                  current_df = st.session_state[ss_key]["df"]
                                  if to_del in current_df.columns:
